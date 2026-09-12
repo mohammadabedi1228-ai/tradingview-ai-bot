@@ -3,92 +3,125 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/") {
-      return new Response("TradingView AI Bot is online.", {
-        headers: { "content-type": "text/plain; charset=UTF-8" },
+      return new Response("Trading Signal Bot is online.", {
+        headers: {
+          "content-type": "text/plain; charset=UTF-8",
+        },
       });
     }
 
-    if (request.method !== "POST" || url.pathname !== "/webhook") {
-      return new Response("Not found", { status: 404 });
+    if (request.method === "GET" && url.pathname === "/signal") {
+      const result = await getSignal();
+      return Response.json(result);
     }
 
-    let alert;
-
-    try {
-      alert = await request.json();
-    } catch {
-      return Response.json(
-        { ok: false, error: "Invalid JSON" },
-        { status: 400 }
-      );
-    }
-
-    ctx.waitUntil(analyzeAlert(alert, env));
-
-    return Response.json({
-      ok: true,
-      received: true
-    });
+    return new Response("Not found", { status: 404 });
   },
 };
 
-async function analyzeAlert(alert, env) {
-  if (!env.OPENAI_API_KEY) {
-    console.error("OPENAI_API_KEY is not configured.");
-    return;
-  }
-
-  const prompt = `You are a market-analysis assistant for educational purposes.
-
-Analyze this TradingView alert data:
-
-${JSON.stringify(alert, null, 2)}
-
-Give a concise analysis with:
-
-1. Market/symbol context if available
-2. Directional bias (bullish, bearish, or neutral)
-3. Key reasons based only on the supplied data
-4. Important risk/invalidation level if supplied
-5. A short educational conclusion
-
-Do not claim certainty and do not present the response as financial advice.`;
-
+async function getSignal() {
   try {
     const response = await fetch(
-      "https://api.openai.com/v1/responses",
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${env.OPENAI_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "gpt-5.6",
-          input: prompt,
-        }),
-      }
+      "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=100"
     );
-
-    const data = await response.json();
 
     if (!response.ok) {
-      console.error(
-        "OpenAI API error:",
-        JSON.stringify(data)
-      );
-      return;
+      return {
+        ok: false,
+        error: "Binance API error",
+      };
     }
 
-    console.log(
-      "AI ANALYSIS:",
-      data.output_text || JSON.stringify(data)
-    );
+    const candles = await response.json();
+
+    const closes = candles.map(c => Number(c[4]));
+
+    const price = closes[closes.length - 1];
+
+    const ema20 = EMA(closes, 20);
+    const ema50 = EMA(closes, 50);
+    const rsi = RSI(closes, 14);
+
+    let score = 0;
+
+    if (ema20 > ema50) score += 1;
+    if (ema20 < ema50) score -= 1;
+
+    if (rsi >= 50 && rsi <= 70) score += 1;
+    if (rsi < 30) score += 1;
+    if (rsi > 70) score -= 1;
+
+    let signal = "WAIT";
+
+    if (score >= 2) {
+      signal = "BUY";
+    } else if (score <= -2) {
+      signal = "SELL";
+    }
+
+    return {
+      ok: true,
+      symbol: "BTCUSDT",
+      price,
+      ema20,
+      ema50,
+      rsi,
+      score,
+      signal,
+      timeframe: "5m",
+    };
 
   } catch (error) {
-    console.error(
-      "AI request failed:",
-      error
-    );
+    return {
+      ok: false,
+      error: error.message,
+    };
   }
+}
+
+function EMA(values, period) {
+  const multiplier = 2 / (period + 1);
+
+  let ema = values.slice(0, period)
+    .reduce((a, b) => a + b, 0) / period;
+
+  for (let i = period; i < values.length; i++) {
+    ema = (values[i] - ema) * multiplier + ema;
+  }
+
+  return Number(ema.toFixed(2));
+}
+
+function RSI(values, period) {
+  let gains = 0;
+  let losses = 0;
+
+  for (let i = 1; i <= period; i++) {
+    const change = values[i] - values[i - 1];
+
+    if (change >= 0) {
+      gains += change;
+    } else {
+      losses -= change;
+    }
+  }
+
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+
+  for (let i = period + 1; i < values.length; i++) {
+    const change = values[i] - values[i - 1];
+
+    const gain = Math.max(change, 0);
+    const loss = Math.max(-change, 0);
+
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+  }
+
+  if (avgLoss === 0) return 100;
+
+  const rs = avgGain / avgLoss;
+
+  return Number((100 - 100 / (1 + rs)).toFixed(2));
 }
