@@ -24,13 +24,17 @@ async function getSignal() {
     const response = await fetch(
       "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=100"
     );
-
     if (!response.ok) {
-      return {
-        ok: false,
-        error: "Binance API error",
-      };
+  const errorText = await response.text();
+
+  return {
+    ok: false,
+    error: "Binance API error",
+    status: response.status,
+    details: errorText,
+  };
     }
+
 
     const candles = await response.json();
 
